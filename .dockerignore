@@ -1,0 +1,43 @@
+# ── Python artifacts ──
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ── Git ──
+.git/
+.gitignore
+
+# ── Environment / Secrets ──
+.env
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Data directories (mounted as volumes, not baked into image) ──
+uploads/*
+outputs/*
+reproduction_outputs/
+strat_test_outputs/
+
+# ── Archives & large files ──
+*.rar
+*.zip
+*.tar.gz
+
+# ── Logs & debug artifacts ──
+*.log
+*.txt
+!requirements.txt
+debug_*.json
+debug_*.py
+reproduce_*.py
+test_*.py
+test_*.log
+
+# ── Docker (don't recurse) ──
+docker-compose*.yml
+Dockerfile

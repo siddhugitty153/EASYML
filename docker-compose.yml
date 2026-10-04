@@ -1,0 +1,133 @@
+# ============================================================
+# EasyML — Docker Compose (Development / Production)
+# ============================================================
+# Services:
+#   web            – Flask REST API via Gunicorn
+#   celery_worker  – Celery worker for background ML tasks
+#   redis          – Message broker & result backend
+#   db             – PostgreSQL with persistent named volume
+#
+# Usage:
+#   cp .env.example .env   # configure secrets
+#   docker compose up -d --build
+#   docker compose logs -f web celery_worker
+# ============================================================
+
+services:
+  # ── Redis (Broker & Result Backend) ─────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: easyml-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── PostgreSQL (Experiment Tracking DB) ─────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: easyml-db
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-easyml}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-easyml}
+      POSTGRES_DB: ${POSTGRES_DB:-easyml}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-easyml}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Flask Web API (Gunicorn) ────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easyml-web
+    ports:
+      - "${WEB_PORT:-5000}:5000"
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-easyml}:${POSTGRES_PASSWORD:-easyml}@db:5432/${POSTGRES_DB:-easyml}
+    volumes:
+      # Bind mount for live code reloading during development
+      - .:/app
+      # Shared output volume so web can read results from workers
+      - shared_outputs:/app/outputs
+      # Shared upload volume
+      - shared_uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    # Override CMD for development: use Flask's reloader instead of Gunicorn
+    # Comment out for production and let the Dockerfile CMD (Gunicorn) take over
+    command: >
+      gunicorn app:app
+        --bind 0.0.0.0:5000
+        --workers 4
+        --timeout 120
+        --reload
+        --access-logfile -
+        --error-logfile -
+    restart: unless-stopped
+
+  # ── Celery Worker (Background ML Tasks) ─────────────────────
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easyml-celery-worker
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-easyml}:${POSTGRES_PASSWORD:-easyml}@db:5432/${POSTGRES_DB:-easyml}
+    volumes:
+      # Bind mount for live code reloading during development
+      - .:/app
+      # Shared output volume so worker writes are visible to web
+      - shared_outputs:/app/outputs
+      # Shared upload volume so worker can read uploaded data
+      - shared_uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    # Single prefork worker — ML training is CPU-bound; avoid over-subscription
+    command: >
+      celery -A celery_app.celery worker
+        --loglevel=info
+        --concurrency=1
+        --pool=prefork
+        --max-tasks-per-child=10
+        --autoscale=2,1
+    restart: unless-stopped
+
+# ── Named Volumes ─────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  shared_outputs:
+    driver: local
+  shared_uploads:
+    driver: local
